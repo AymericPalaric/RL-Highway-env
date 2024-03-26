@@ -8,6 +8,7 @@ from copy import deepcopy
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
+DEVICE = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class Net(nn.Module):
     def __init__(self, obs_size, hidden_size, n_actions):
@@ -83,7 +84,10 @@ class DQN:
 
         self.buffer = ReplayBuffer(self.buffer_capacity)
         self.q_net = Net(obs_size, hidden_size, n_actions)
+        self.q_net.to(DEVICE)
         self.target_net = Net(obs_size, hidden_size, n_actions)
+        self.target_net.to(DEVICE)
+
 
         self.loss_function = nn.MSELoss()
         self.optimizer = optim.Adam(
@@ -129,9 +133,11 @@ class DQN:
 
         # compute the ideal Q values
         with torch.no_grad():
+            next_states_batch = next_states_batch.to(DEVICE)
             next_state_values = (1 - terminated_batch) * self.target_net(
                 next_states_batch
             ).max(1)[0]
+            next_state_values = next_state_values.float()
             targets = next_state_values * self.gamma + rewards_batch
             targets = targets.float()
         # print(targets.unsqueeze(1).shape, q_values.shape)
@@ -183,7 +189,9 @@ class DQN:
 
         self.buffer = ReplayBuffer(self.buffer_capacity)
         self.q_net = Net(obs_size, hidden_size, n_actions)
+        self.q_net.to(DEVICE)
         self.target_net = Net(obs_size, hidden_size, n_actions)
+        self.target_net.to(DEVICE)
 
         self.loss_function = nn.MSELoss()
         self.optimizer = optim.Adam(
@@ -202,7 +210,9 @@ class DQN:
         # print("state in get_q", state)
         state_tensor = torch.tensor(state).unsqueeze(0)
         with torch.no_grad():
+            state_tensor = state_tensor.to(DEVICE)
             output = self.q_net.forward(state_tensor) # shape (1,  n_actions)
+            output = output.cpu()
         # print("output", output.numpy()[0])
         return output.numpy()[0]  # shape  (n_actions)
 
@@ -299,7 +309,7 @@ if __name__=="__main__":
     
     agent = DQN(*arguments)
 
-    N_episodes = 25
+    N_episodes = 50 
     eval_every = 10
     reward_threshold = 300
 
