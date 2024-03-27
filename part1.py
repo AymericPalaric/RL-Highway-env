@@ -6,8 +6,9 @@ import random
 from torch import optim
 from copy import deepcopy
 import matplotlib.pyplot as plt
-from tqdm import tqdm
+from tqdm import tqdm, trange
 
+DEVICE = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class Net(nn.Module):
     def __init__(self, obs_size, hidden_size, n_actions):
@@ -78,12 +79,15 @@ class DQN:
     def reset(self):
         hidden_size = 128
 
-        obs_size = self.observation_space.shape[0]
+        obs_size = np.prod(self.observation_space.shape)
+        # print("obs_size", obs_size)
         n_actions = self.action_space.n
 
         self.buffer = ReplayBuffer(self.buffer_capacity)
         self.q_net = Net(obs_size, hidden_size, n_actions)
+        self.q_net.to(DEVICE)
         self.target_net = Net(obs_size, hidden_size, n_actions)
+        self.target_net.to(DEVICE)
 
         self.loss_function = nn.MSELoss()
         self.optimizer = optim.Adam(
@@ -124,16 +128,23 @@ class DQN:
             terminated_batch,
             next_states_batch
         ) = tuple(map(torch.cat, zip(*transitions)))
-
+        states_batch = states_batch.to(DEVICE)
+        actions_batch = actions_batch.to(DEVICE)
         q_values = self.q_net.forward(states_batch).gather(1, actions_batch)
 
         # compute the ideal Q values
+        self.target_net.eval()
         with torch.no_grad():
+            next_states_batch = next_states_batch.to(DEVICE)
+            terminated_batch = terminated_batch.to(DEVICE)
             next_state_values = (1 - terminated_batch) * self.target_net(
                 next_states_batch
             ).max(1)[0]
+            next_state_values = next_state_values.to(DEVICE)
+            rewards_batch = rewards_batch.to(DEVICE)
             targets = next_state_values * self.gamma + rewards_batch
             targets = targets.float()
+        self.target_net.train()
         # print(targets.unsqueeze(1).shape, q_values.shape)
         # print("targets", targets.dtype)
         # print("q_values", q_values.dtype)
@@ -154,7 +165,7 @@ class DQN:
         if terminated:
             self.n_eps += 1
 
-        return loss.detach().numpy()
+        return loss.detach().cpu().numpy()
 
     def get_action(self, state, epsilon=None):
         """
@@ -174,25 +185,6 @@ class DQN:
         self.epsilon = self.epsilon_min + (self.epsilon_start - self.epsilon_min) * (
             np.exp(-1.0 * self.n_eps / self.decrease_epsilon_factor)
         )
-
-    def reset(self):
-        hidden_size = 128
-
-        obs_size = 25
-        n_actions = self.action_space.n
-
-        self.buffer = ReplayBuffer(self.buffer_capacity)
-        self.q_net = Net(obs_size, hidden_size, n_actions)
-        self.target_net = Net(obs_size, hidden_size, n_actions)
-
-        self.loss_function = nn.MSELoss()
-        self.optimizer = optim.Adam(
-            params=self.q_net.parameters(), lr=self.learning_rate
-        )
-
-        self.epsilon = self.epsilon_start
-        self.n_steps = 0
-        self.n_eps = 0
     
     def get_q(self, state):
         """
@@ -201,13 +193,16 @@ class DQN:
         # state_tensor = torch.tensor([state]).unsqueeze(0)
         # print("state in get_q", state)
         state_tensor = torch.tensor(state).unsqueeze(0)
+        self.q_net.eval()
         with torch.no_grad():
+            state_tensor = state_tensor.to(DEVICE)
             output = self.q_net.forward(state_tensor) # shape (1,  n_actions)
         # print("output", output.numpy()[0])
-        return output.numpy()[0]  # shape  (n_actions)
+        self.q_net.train()
+        return output.cpu().numpy()[0]
 
 
-def eval_agent(agent, env, n_sim=5):
+def eval_agent(agent, env, n_sim=5, verbose=False):
     """
     ** TO BE IMPLEMENTED **
     
@@ -220,7 +215,7 @@ def eval_agent(agent, env, n_sim=5):
     """
     env_copy = deepcopy(env)
     episode_rewards = np.zeros(n_sim)
-    for i in range(n_sim):
+    for i in trange(n_sim, disable=not verbose):
         state,_ = env_copy.reset()
         done = False
         while not done:
@@ -236,15 +231,26 @@ def train(env, agent, N_episodes, eval_every=10, reward_threshold=300):
     total_time = 0
     state, _ = env.reset()
     losses = []
-    for ep in tqdm(range(N_episodes)):
+    # display the progress with the reward and the loss
+    pbar = tqdm(range(N_episodes), postfix={"reward": 0.0, "loss": 0.0})
+    for ep in pbar:
         done = False
+        ep_reward = 0
         state, _ = env.reset()
         while not done: 
             action = agent.get_action(state)
 
             next_state, reward, terminated, truncated, _ = env.step(action)
             loss_val = agent.update(state, action, reward, terminated, next_state)
+            ep_reward += reward
 
+            pbar.set_postfix(
+                {
+                    "reward": ep_reward,
+                    "loss": loss_val,
+                    "epsilon": agent.epsilon,
+                }
+            )
             state = next_state
             losses.append(loss_val)
 
@@ -260,30 +266,126 @@ def train(env, agent, N_episodes, eval_every=10, reward_threshold=300):
     return losses
 
 
+def run_agent(agent, env):
+    state, _ = env.reset()
+    done = False
+    reward = 0
+    while not done:
+        action = agent.get_action(state)
+        state, reward, terminated, truncated, _ = env.step(action)
+        done = terminated or truncated
+        env.render()
+        reward += reward
+    print("final reward", reward)
+    env.close()
+
 if __name__=="__main__":
+    TRAIN = False
+    config = {
+        "high_speed_reward" : 0.5,
+        "collision_reward" : -100,
+        "right_lane_reward" : 0.2,
+        # "lane_change_reward" : 0.05,
+        "reward_speed_range" : [25, 40],
+        # "duration" : 80,
+        "vehicles_count" : 75,
+        # "simulation_frequency" : 10,
+        "vehicles_density" : 1.5,
+    }
+
+    
+    if TRAIN:
+        
+        env = gym.make("highway-fast-v0", render_mode="rgb_array")
+        
+        # change config
+        for k,v in config.items():
+            env.config[k] = v
+        print("config", env.config)
+        env.reset()
+        print("obs space:", env.observation_space)
+        print("action space:", env.action_space, env.action_space.n)
+        # print("action space sample:", env.action_space.sample())
+        print("obs space sample:", env.observation_space.sample())
+        # print("step:", env.step(env.action_space.sample()))
+        env.reset()
+
+        action_space = env.action_space
+        observation_space = env.observation_space
+        gamma = 0.9
+        batch_size = 64
+        buffer_capacity = 10_000
+        update_target_every = 128
+
+        epsilon_start = 0.15
+        decrease_epsilon_factor = 1000
+        epsilon_min = 0.05
+
+        learning_rate = 5e-3
+
+        arguments = (action_space,
+                    observation_space,
+                    gamma,
+                    batch_size,
+                    buffer_capacity,
+                    update_target_every, 
+                    epsilon_start, 
+                    decrease_epsilon_factor, 
+                    epsilon_min,
+                    learning_rate,
+                )
+        
+        
+        agent = DQN(*arguments)
+
+        N_episodes = 2_000
+        eval_every = 1000
+        reward_threshold = 300
+
+        state, _ = env.reset()
+        done = False
+        reward = 0
+        while not done:
+            action = agent.get_action(state)
+            state, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            # env.render()
+            reward += reward
+        print("Reward before training", reward)
+        # env.close()
+
+        env.reset()
+
+        losses = train(env, agent, N_episodes, eval_every=eval_every, reward_threshold=reward_threshold)
+        
+        plt.plot(losses)
+        plt.show()
+
+        rewards = eval_agent(agent, env, 5, verbose=True)
+        print("")
+        print("mean reward after training = ", np.mean(rewards))
+
+        # save model
+        torch.save(agent.q_net.state_dict(), "dqn_model.pth")
+    # test run
+    config["duration"] = 100
+    config["vehicles_density"] = 2
     env = gym.make("highway-v0", render_mode="rgb_array")
-    print("config", env.config)
-    env.reset()
-    print("obs space:", env.observation_space)
-    print("action space:", env.action_space, env.action_space.n)
-    # print("action space sample:", env.action_space.sample())
-    print("obs space sample:", env.observation_space.sample())
-    # print("step:", env.step(env.action_space.sample()))
-    env.reset()
-
-
+    for k,v in config.items():
+        env.config[k] = v
+    
     action_space = env.action_space
     observation_space = env.observation_space
-    gamma = 0.99
+    gamma = 0.9
     batch_size = 64
     buffer_capacity = 10_000
-    update_target_every = 16
+    update_target_every = 128
 
-    epsilon_start = 0.1
+    epsilon_start = 0.15
     decrease_epsilon_factor = 1000
     epsilon_min = 0.05
 
-    learning_rate = 1e-3
+    learning_rate = 5e-3
 
     arguments = (action_space,
                 observation_space,
@@ -296,31 +398,18 @@ if __name__=="__main__":
                 epsilon_min,
                 learning_rate,
             )
-    
-    agent = DQN(*arguments)
-
-    N_episodes = 25
-    eval_every = 10
-    reward_threshold = 300
-
-    losses = train(env, agent, N_episodes, eval_every=eval_every, reward_threshold=reward_threshold)
-    
-    plt.plot(losses)
-    plt.show()
-
-    rewards = eval_agent(agent, env, 20)
-    print("")
-    print("mean reward after training = ", np.mean(rewards))
-
-
-    # test run
     state, _ = env.reset()
-    done = False
-    while not done:
-        action = agent.get_action(state)
-        state, reward, terminated, truncated, _ = env.step(action)
-        done = terminated or truncated
-        env.render()
-
+    agent_test = DQN(*arguments)
+    if TRAIN:
+        agent_test.q_net.load_state_dict(agent.q_net.state_dict())
+    else:
+        print("loading model")
+        agent_test.q_net.load_state_dict(torch.load("dqn_model.pth"))
+    # agent_test.target_net.load_state_dict(agent.target_net.state_dict())
+    agent_test.epsilon = 0.0
+    agent_test.q_net.eval()
+    # agent_test.target_net.eval()
+    
+    run_agent(agent_test, env)
 
     env.close()
