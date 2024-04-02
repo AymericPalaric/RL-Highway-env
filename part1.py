@@ -13,16 +13,35 @@ DEVICE = torch.device("mps") if torch.backends.mps.is_available() else torch.dev
 class Net(nn.Module):
     def __init__(self, obs_size, hidden_size, n_actions):
         super(Net, self).__init__()
-        self.net = nn.Sequential(
-            nn.Linear(obs_size, hidden_size),
+        # self.net = nn.Sequential(
+        #     nn.Linear(obs_size, hidden_size),
+        #     nn.ReLU(),
+        #     nn.Linear(hidden_size, n_actions),
+        # )
+        self.conv1 = nn.Conv2d(1, 16, kernel_size=2, stride=1)
+        self.relu = nn.ReLU()
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1)
+        self.flatten = nn.Flatten()
+        self.fc = nn.Sequential(
+            nn.Linear(32*4, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, n_actions),
         )
 
     def forward(self, x):
         # flatten x
-        x = x.view(x.size(0), -1)
-        return self.net(x)
+        # x = x.view(x.size(0), -1)
+        x = x.unsqueeze(1)
+        # print("x shape", x.shape)
+        x = self.conv1(x)
+        x = self.relu(x)
+        x = self.conv2(x)
+        x = self.relu(x)
+        x = self.flatten(x)
+        # print("x shape", x.shape)
+        x = self.fc(x)
+
+        return x
 
 
 class ReplayBuffer:
@@ -231,6 +250,7 @@ def train(env, agent, N_episodes, eval_every=10, reward_threshold=300):
     total_time = 0
     state, _ = env.reset()
     losses = []
+    agg_rewards = []
     # display the progress with the reward and the loss
     pbar = tqdm(range(N_episodes), postfix={"reward": 0.0, "loss": 0.0})
     for ep in pbar:
@@ -256,41 +276,41 @@ def train(env, agent, N_episodes, eval_every=10, reward_threshold=300):
 
             done = terminated or truncated
             total_time += 1
-
+        agg_rewards.append(ep_reward)
         if ((ep+1)% eval_every == 0):
             rewards = eval_agent(agent, env)
             print("episode =", ep+1, ", reward = ", np.mean(rewards))
             if np.mean(rewards) >= reward_threshold:
                 break
                 
-    return losses
+    return losses, agg_rewards
 
 
 def run_agent(agent, env):
     state, _ = env.reset()
     done = False
-    reward = 0
+    full_reward = 0
     while not done:
         action = agent.get_action(state)
         state, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
         env.render()
-        reward += reward
-    print("final reward", reward)
+        full_reward += reward
+    print("final reward", full_reward)
     env.close()
 
 if __name__=="__main__":
     TRAIN = False
     config = {
         "high_speed_reward" : 0.5,
-        "collision_reward" : -100,
+        "collision_reward" : -10,
         "right_lane_reward" : 0.2,
         # "lane_change_reward" : 0.05,
         "reward_speed_range" : [25, 40],
         # "duration" : 80,
         "vehicles_count" : 75,
         # "simulation_frequency" : 10,
-        "vehicles_density" : 1.5,
+        "vehicles_density" : 2.2,
     }
 
     
@@ -312,16 +332,16 @@ if __name__=="__main__":
 
         action_space = env.action_space
         observation_space = env.observation_space
-        gamma = 0.9
-        batch_size = 64
+        gamma = 0.95
+        batch_size = 128
         buffer_capacity = 10_000
-        update_target_every = 128
+        update_target_every = 256
 
         epsilon_start = 0.15
         decrease_epsilon_factor = 1000
         epsilon_min = 0.05
 
-        learning_rate = 5e-3
+        learning_rate = 1e-3
 
         arguments = (action_space,
                     observation_space,
@@ -338,28 +358,35 @@ if __name__=="__main__":
         
         agent = DQN(*arguments)
 
-        N_episodes = 2_000
-        eval_every = 1000
+        N_episodes = 1_000
+        eval_every = 100
         reward_threshold = 300
 
         state, _ = env.reset()
         done = False
-        reward = 0
+        full_reward = 0
         while not done:
             action = agent.get_action(state)
             state, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
             # env.render()
-            reward += reward
-        print("Reward before training", reward)
+            full_reward += reward
+        print("Reward before training", full_reward)
         # env.close()
 
         env.reset()
 
-        losses = train(env, agent, N_episodes, eval_every=eval_every, reward_threshold=reward_threshold)
+        losses, agg_rewards = train(env, agent, N_episodes, eval_every=eval_every, reward_threshold=reward_threshold)
         
         plt.plot(losses)
+        plt.title("Loss")
         plt.show()
+        plt.savefig("loss.png")
+        plt.clf()
+        plt.plot(agg_rewards)
+        plt.title("Reward")
+        plt.show()
+        plt.savefig("reward.png")
 
         rewards = eval_agent(agent, env, 5, verbose=True)
         print("")
@@ -369,7 +396,7 @@ if __name__=="__main__":
         torch.save(agent.q_net.state_dict(), "dqn_model.pth")
     # test run
     config["duration"] = 100
-    config["vehicles_density"] = 2
+    config["vehicles_density"] = 2.2
     env = gym.make("highway-v0", render_mode="rgb_array")
     for k,v in config.items():
         env.config[k] = v

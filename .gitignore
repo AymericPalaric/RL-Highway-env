@@ -165,3 +165,8 @@ cython_debug/
 *.pth
 *.pkl
 *.h5
+
+# images
+*.png
+*.jpg
+*.jpeg
