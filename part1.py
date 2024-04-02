@@ -18,12 +18,12 @@ class Net(nn.Module):
         #     nn.ReLU(),
         #     nn.Linear(hidden_size, n_actions),
         # )
-        self.conv1 = nn.Conv2d(1, 16, kernel_size=2, stride=1)
+        self.conv1 = nn.Conv2d(7, 16, kernel_size=3, stride=1)
         self.relu = nn.ReLU()
         self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1)
         self.flatten = nn.Flatten()
         self.fc = nn.Sequential(
-            nn.Linear(32*4, hidden_size),
+            nn.Linear(32*4*4, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, n_actions),
         )
@@ -31,7 +31,7 @@ class Net(nn.Module):
     def forward(self, x):
         # flatten x
         # x = x.view(x.size(0), -1)
-        x = x.unsqueeze(1)
+        # x = x.unsqueeze(1)
         # print("x shape", x.shape)
         x = self.conv1(x)
         x = self.relu(x)
@@ -300,18 +300,18 @@ def run_agent(agent, env):
     env.close()
 
 if __name__=="__main__":
-    TRAIN = False
+    TRAIN = True
     from config import env
 
     
     if TRAIN:
         
-        print("config", env.config)
+        # print("config", env.config)
         env.reset()
         print("obs space:", env.observation_space)
         print("action space:", env.action_space, env.action_space.n)
         # print("action space sample:", env.action_space.sample())
-        print("obs space sample:", env.observation_space.sample())
+        print("obs space sample:", env.observation_space.sample().shape)
         # print("step:", env.step(env.action_space.sample()))
         env.reset()
 
