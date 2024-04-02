@@ -301,26 +301,11 @@ def run_agent(agent, env):
 
 if __name__=="__main__":
     TRAIN = False
-    config = {
-        "high_speed_reward" : 0.5,
-        "collision_reward" : -10,
-        "right_lane_reward" : 0.2,
-        # "lane_change_reward" : 0.05,
-        "reward_speed_range" : [25, 40],
-        # "duration" : 80,
-        "vehicles_count" : 75,
-        # "simulation_frequency" : 10,
-        "vehicles_density" : 2.2,
-    }
+    from config import env
 
     
     if TRAIN:
         
-        env = gym.make("highway-fast-v0", render_mode="rgb_array")
-        
-        # change config
-        for k,v in config.items():
-            env.config[k] = v
         print("config", env.config)
         env.reset()
         print("obs space:", env.observation_space)
@@ -395,11 +380,6 @@ if __name__=="__main__":
         # save model
         torch.save(agent.q_net.state_dict(), "dqn_model.pth")
     # test run
-    config["duration"] = 100
-    config["vehicles_density"] = 2.2
-    env = gym.make("highway-v0", render_mode="rgb_array")
-    for k,v in config.items():
-        env.config[k] = v
     
     action_space = env.action_space
     observation_space = env.observation_space
