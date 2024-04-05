@@ -300,8 +300,8 @@ def run_agent(agent, env):
     env.close()
 
 if __name__=="__main__":
-    TRAIN = True
-    from config import env
+    TRAIN = False
+    from config import env, config
 
     
     if TRAIN:
@@ -367,7 +367,8 @@ if __name__=="__main__":
         plt.title("Loss")
         plt.show()
         plt.savefig("loss.png")
-        plt.clf()
+
+        plt.figure()
         plt.plot(agg_rewards)
         plt.title("Reward")
         plt.show()
@@ -380,7 +381,12 @@ if __name__=="__main__":
         # save model
         torch.save(agent.q_net.state_dict(), "dqn_model.pth")
     # test run
-    
+    env = gym.make("highway-v0", render_mode="rgb_array")
+    config["duration"] = 150
+    env.unwrapped.configure(config)
+    env.reset()
+    print("obs space:", env.observation_space)
+    print("action space:", env.action_space, env.action_space.n)
     action_space = env.action_space
     observation_space = env.observation_space
     gamma = 0.9
