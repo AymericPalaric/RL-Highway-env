@@ -18,9 +18,13 @@ class Net(nn.Module):
         #     nn.ReLU(),
         #     nn.Linear(hidden_size, n_actions),
         # )
-        self.conv1 = nn.Conv2d(7, 16, kernel_size=3, stride=1)
+        self.conv1 = nn.Conv2d(7, 16, kernel_size=2, stride=1)
+        self.bn1 = nn.BatchNorm2d(16)
+        self.maxpool1 = nn.MaxPool2d(kernel_size=2, stride=1)
         self.relu = nn.ReLU()
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=2, stride=1)
+        self.bn2 = nn.BatchNorm2d(32)
+        self.maxpool2 = nn.MaxPool2d(kernel_size=2, stride=1)
         self.flatten = nn.Flatten()
         self.fc = nn.Sequential(
             nn.Linear(32*4*4, hidden_size),
@@ -34,9 +38,13 @@ class Net(nn.Module):
         # x = x.unsqueeze(1)
         # print("x shape", x.shape)
         x = self.conv1(x)
+        x = self.bn1(x)
         x = self.relu(x)
+        x = self.maxpool1(x)
         x = self.conv2(x)
+        x = self.bn2(x)
         x = self.relu(x)
+        x = self.maxpool2(x)
         x = self.flatten(x)
         # print("x shape", x.shape)
         x = self.fc(x)
@@ -240,7 +248,8 @@ def eval_agent(agent, env, n_sim=5, verbose=False):
         while not done:
             action = agent.get_action(state)
             # print(env_copy.step(action))
-            next_state, reward, terminated, truncated, _ = env_copy.step(action)
+            next_state, reward, terminated, truncated, info = env_copy.step(action)
+            reward = update_reward(next_state, env, info, reward)
             state = next_state
             done = terminated or truncated
             episode_rewards[i] += reward
@@ -260,7 +269,8 @@ def train(env, agent, N_episodes, eval_every=10, reward_threshold=300):
         while not done: 
             action = agent.get_action(state)
 
-            next_state, reward, terminated, truncated, _ = env.step(action)
+            next_state, reward, terminated, truncated, info = env.step(action)
+            reward = update_reward(next_state, env, info, reward)
             loss_val = agent.update(state, action, reward, terminated, next_state)
             ep_reward += reward
 
@@ -292,12 +302,39 @@ def run_agent(agent, env):
     full_reward = 0
     while not done:
         action = agent.get_action(state)
-        state, reward, terminated, truncated, _ = env.step(action)
+        state, reward, terminated, truncated, info = env.step(action)
+        reward = update_reward(state, env, info, reward)
         done = terminated or truncated
         env.render()
         full_reward += reward
     print("final reward", full_reward)
     env.close()
+
+def update_reward(state, env, info, reward):
+    """
+    Update the reward to penalize going backwards and off the road.
+    state observation: [presence, x, y, vx, vy, cos_h, sin_h] for each cell in a radius of 4 cells around the agent.
+    """
+    # get agent position, heading and speed
+    x = env.vehicle.position[0]
+    y = env.vehicle.position[1]
+    speed = info["speed"]
+    on_road = info["rewards"]["on_road_reward"]>0
+    collision = info["rewards"]["collision_reward"]>0
+    heading = env.vehicle.heading
+    # print(heading)
+    if not on_road:
+        reward -= 5
+    if speed <= 10:
+        reward -= 1
+    if collision:
+        reward -= 2
+    # check the heading
+    if (heading>np.pi/2 and heading<3*np.pi/2) or (heading<-np.pi/2 and heading>-3*np.pi/2):
+        reward -= 1
+    return reward
+
+
 
 if __name__=="__main__":
     TRAIN = False
@@ -317,16 +354,16 @@ if __name__=="__main__":
 
         action_space = env.action_space
         observation_space = env.observation_space
-        gamma = 0.95
-        batch_size = 128
+        gamma = 0.99
+        batch_size = 256
         buffer_capacity = 10_000
-        update_target_every = 256
+        update_target_every = 1024
 
-        epsilon_start = 0.15
-        decrease_epsilon_factor = 1000
+        epsilon_start = 0.25
+        decrease_epsilon_factor = 500
         epsilon_min = 0.05
 
-        learning_rate = 1e-3
+        learning_rate = 1e-2
 
         arguments = (action_space,
                     observation_space,
@@ -343,16 +380,17 @@ if __name__=="__main__":
         
         agent = DQN(*arguments)
 
-        N_episodes = 1_000
+        N_episodes = 500
         eval_every = 100
-        reward_threshold = 300
+        reward_threshold = 500
 
         state, _ = env.reset()
         done = False
         full_reward = 0
         while not done:
             action = agent.get_action(state)
-            state, reward, terminated, truncated, _ = env.step(action)
+            state, reward, terminated, truncated, info = env.step(action)
+            reward = update_reward(state, env, info, reward)
             done = terminated or truncated
             # env.render()
             full_reward += reward
@@ -381,7 +419,7 @@ if __name__=="__main__":
         # save model
         torch.save(agent.q_net.state_dict(), "dqn_model.pth")
     # test run
-    env = gym.make("highway-v0", render_mode="rgb_array")
+    env = gym.make("highway-fast-v0", render_mode="rgb_array")
     config["duration"] = 150
     env.unwrapped.configure(config)
     env.reset()
