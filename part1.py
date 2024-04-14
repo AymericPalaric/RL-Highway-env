@@ -99,8 +99,10 @@ class DQN:
         hidden_size = 128
 
         obs_size = np.prod(self.observation_space.shape)
-        # print("obs_size", obs_size)
+        print("obs_size", obs_size)
         n_actions = self.action_space.n
+        print("Action space", self.action_space)
+        print("n_actions", n_actions)
 
         self.buffer = ReplayBuffer(self.buffer_capacity)
         self.q_net = Net(obs_size, hidden_size, n_actions)
@@ -300,8 +302,8 @@ def run_agent(agent, env):
     env.close()
 
 if __name__=="__main__":
-    TRAIN = True
-    from config import env
+    TRAIN = False
+    from config1 import env
 
     
     if TRAIN:
@@ -309,7 +311,7 @@ if __name__=="__main__":
         # print("config", env.config)
         env.reset()
         print("obs space:", env.observation_space)
-        print("action space:", env.action_space, env.action_space.n)
+        # print("action space:", env.action_space, env.action_space.n)
         # print("action space sample:", env.action_space.sample())
         print("obs space sample:", env.observation_space.sample().shape)
         # print("step:", env.step(env.action_space.sample()))

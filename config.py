@@ -35,4 +35,4 @@ config = {
 
 
 env.unwrapped.configure(config)
-print(env.reset())
+# print(env.reset())
