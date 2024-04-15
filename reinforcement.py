@@ -41,11 +41,12 @@ def eval_agent(agent, env, n_episodes=10):
         total_reward = 0
         while not done:
             action = agent.get_action(state)
-            next_state, reward, done, _, info = env_copy.step(action)
+            next_state, reward, terminated, _, info = env_copy.step(action)
             # next_state, reward, terminated, truncated, _ = env_copy.step(action)
             total_reward += reward
             state = next_state
-            # done = terminated or truncated
+            done = terminated or info['crashed'] or info['rewards']['collision_reward'] or not info['rewards']['on_road_reward']
+            
         episode_rewards[i] = total_reward
     return episode_rewards
 
@@ -57,10 +58,11 @@ def run_one_episode(env, agent, display = True):
     while not done:
         action = agent.get_action(state)
         print(display_env.step(action))
-        next_state, reward, done, _, info = display_env.step(action)
+        next_state, reward, terminated, _, info = display_env.step(action)
         # next_state, reward, done, _, _ = display_env.step(action)
         total_reward += reward
         state = next_state
+        done = terminated or info['crashed'] or info['rewards']['collision_reward'] or not info['rewards']['on_road_reward']
         if display:
             clear_output(wait=True)
             plt.imshow(display_env.render())
@@ -79,10 +81,16 @@ def train(env, agent, n_episodes, eval_every=10, reward_threshold = 300, n_eval 
         state, _ = env.reset()
         while not done:
             action = agent.get_action(state)
-            next_state, reward, done, _ = env.step(action)
+            next_state, reward, terminated, _, info = env.step(action)
             agent.update(state, action, reward, done, next_state)
             state = next_state
+            done = terminated or info['crashed'] or info['rewards']['collision_reward'] or not info['rewards']['on_road_reward']
             total_time += 1
+            if ep == n_episodes -1 :
+                clear_output(wait=True)
+                plt.imshow(env.render())
+                plt.show()
+                env.close()
 
         if (ep+1) % eval_every == 0:
             mean_reward = np.mean(eval_agent(agent, env, n_eval))
@@ -90,6 +98,9 @@ def train(env, agent, n_episodes, eval_every=10, reward_threshold = 300, n_eval 
             if mean_reward > reward_threshold:
                 print(f"Solved in {ep} episodes!")
                 break
+    print("Finished training")
+    # Save the model
+    torch.save(agent.policy_net.state_dict(), "reinforcement_15000.pth")
     return
 
 
@@ -98,6 +109,10 @@ class Net(nn.Module):
         super(Net, self).__init__()
         self.net = nn.Sequential(
             nn.Linear(obs_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size*2),
+            nn.ReLU(),
+            nn.Linear(hidden_size*2, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, n_actions)
         )
@@ -133,14 +148,86 @@ class ReinforceSqueleton:
         return [action]
     
     def reset(self):
+
         # Observation_space = Box(-inf, inf, (2,12,12))
         # Action space = Box(-1, 1, (1,))
-        obs_size = 288 #self.observation_space.shape
+
+        obs_size = 288 # self.observation_space.shape = 2*12*12
         n_actions = 1 # self.action_space.shape
         hidden_size = 128
+        
         self.policy_net = Net(obs_size, hidden_size, n_actions)
+        self.current_episode = []
+        self.scores = []
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=self.learning_rate)
+        self.n_eps = 0
 
 
-agent = ReinforceSqueleton(env.observation_space, env.action_space, gamma=0.99, episode_batch_size=1, learning_rate=0.01)
-run_one_episode(env, agent, display=True)
+# agent = ReinforceSqueleton(env.action_space, env.observation_space, gamma=0.99, episode_batch_size=1, learning_rate=0.01)
+# run_one_episode(env, agent, display=True)
+
+class Reinforce(ReinforceSqueleton):
+
+    def gradient_returns(self, rewards, gamma):
+        """
+        Turns a list of rewards into a list of rewards*gamma**t
+        """
+        G = 0
+        returns_list = []
+        T = len(rewards)
+        full_gamma = np.power(gamma, T)
+        for t in range(T):
+            G = rewards[T-t-1] + G*gamma
+            full_gamma = full_gamma/gamma
+            returns_list.append(G*full_gamma)
+        return torch.tensor(returns_list[::-1])
+    
+    def update(self, state, action, reward, done, next_state):
+
+        self.current_episode.append((state, action, reward))
+        if done:
+            states, actions, rewards = zip(*self.current_episode)
+            returns = self.gradient_returns(rewards, self.gamma)
+            flat_states = torch.tensor(states.flatten()).float()
+            # actions = torch.tensor(actions).float()
+            # returns = torch.tensor(returns).float()
+            returns = (returns - returns.mean())/ (returns.std() + 1e-9)
+            action_probs = self.policy_net(flat_states)
+            action_probs = action_probs.item() # action_probs.gather(1, actions.view(-1, 1)).squeeze()
+            loss = -torch.log(action_probs)*returns
+            loss = loss.mean()
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            self.current_episode = []
+        return
+
+agent = Reinforce(env.action_space, env.observation_space, gamma=0.95, episode_batch_size=1, learning_rate=0.01)
+start_time = time.time()
+train(env, agent, n_episodes=15000, eval_every=50, reward_threshold=200, n_eval=10)
+end_time = time.time()
+print(f"Training time: {(end_time - start_time)//60} min" )
+
+class ReinforceBatch(Reinforce):
+    
+    # Update only after a batch of sequence of episodes
+    def update(self, state, action, reward, done, next_state):
+        self.current_episode.append((state, action, reward))
+        if done:
+            self.n_eps += 1
+            states, actions, rewards = zip(*self.current_episode)
+            returns = self.gradient_returns(rewards, self.gamma)
+            flat_states = torch.tensor(states.flatten()).float()
+            returns = (returns - returns.mean())/ (returns.std() + 1e-9)
+            action_probs = self.policy_net(flat_states)
+            action_probs = action_probs.item()
+            loss = -torch.log(action_probs)*returns
+            loss = loss.mean()
+            loss.backward()
+            if self.n_eps % self.episode_batch_size == 0:
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+            self.current_episode = []
+        return
+    
+    

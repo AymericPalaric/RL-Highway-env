@@ -41,7 +41,7 @@ class PolicyAgent:
     def get_action(self, state):
         with torch.no_grad():
             action_probs = self.model(state)
-            action = torch.argmax(action_probs).item()  # Sélectionner l'action avec la plus grande probabilité
+            action = action_probs.item()  # Sélectionner l'action avec la plus grande probabilité
         return action
 
 
