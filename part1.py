@@ -93,19 +93,21 @@ def correct_reward(done, env, info, reward):
     if not on_road:
         reward -= 2
         done = True
-    if speed <= 20:
-        reward -= 2
+    if speed >= 20:
+        reward += 1
+    if speed <= 5:
+        reward -= 0.5
     if collision:
         reward -= 2
     # check the heading
-    if (heading>np.pi/2 and heading<3*np.pi/2) or (heading<-np.pi/2 and heading>-3*np.pi/2):
+    if (heading>3*np.pi/4 and heading<5*np.pi/2) or (heading<-3*np.pi/4 and heading>-5*np.pi/4):
         reward -= 1
     return reward, done
 
 
-def main(env, gamma=0.99, lr=1e-3, min_episodes=20, eps=1, eps_decay=0.995, eps_min=0.01, update_step=10, batch_size=64, update_repeats=50,
+def main(env, load=False, gamma=0.99, lr=1e-3, min_episodes=20, eps=1, eps_decay=0.995, eps_min=0.01, update_step=10, batch_size=64, update_repeats=50,
          num_episodes=3000, seed=42, max_memory_size=50000, lr_gamma=0.9, lr_step=100, measure_step=100,
-         measure_repeats=100, hidden_dim=64, horizon=np.inf, render=True, render_step=50):
+         measure_repeats=100, hidden_dim=64, horizon=np.inf, render=True, render_step=50, reward_thresh=-np.inf):
     """
     :param gamma: reward discount factor
     :param lr: learning rate for the Q-Network
@@ -133,8 +135,14 @@ def main(env, gamma=0.99, lr=1e-3, min_episodes=20, eps=1, eps_decay=0.995, eps_
     :return: the trained Q-Network and the measured performances
     """
 
-    Q_1 = Net(0, hidden_dim, env.action_space.n).to(DEVICE)
-    Q_2 = Net(0, hidden_dim, env.action_space.n).to(DEVICE)
+    if not load:
+        Q_1 = Net(0, hidden_dim, env.action_space.n).to(DEVICE)
+        Q_2 = Net(0, hidden_dim, env.action_space.n).to(DEVICE)
+    else:
+        Q_1 = Net(0, hidden_dim, env.action_space.n).to(DEVICE)
+        Q_1.load_state_dict(torch.load("best_Q.pth"))
+        Q_2 = Net(0, hidden_dim, env.action_space.n).to(DEVICE)
+        Q_2.load_state_dict(torch.load("best_Q.pth"))
     
     # transfer parameters from Q_1 to Q_2
     update_parameters(Q_1, Q_2)
@@ -150,8 +158,8 @@ def main(env, gamma=0.99, lr=1e-3, min_episodes=20, eps=1, eps_decay=0.995, eps_
     performance = []
     ep_rewards = []
     loss = 0
-    max_reward = -np.inf
-    pbar = trange(num_episodes, postfix={"reward": 0, "lr": lr, "eps": eps, "loss": 0})
+    max_reward = reward_thresh
+    pbar = trange(num_episodes, postfix={"reward": 0, "lr": lr, "eps": eps, "loss": 0, "best_reward": max_reward})
     for episode in pbar:
         # display the performance
         if (episode % measure_step == 0) and episode >= min_episodes:
@@ -203,7 +211,7 @@ def main(env, gamma=0.99, lr=1e-3, min_episodes=20, eps=1, eps_decay=0.995, eps_
             # save the best model
             torch.save(Q_1.state_dict(), "best_Q.pth")
         ep_rewards.append(ep_reward)
-        pbar.set_postfix(reward=ep_reward, lr=scheduler.get_lr()[0], eps=eps, loss=loss)
+        pbar.set_postfix(reward=ep_reward, lr=scheduler.get_lr()[0], eps=eps, loss=loss, best_reward=max_reward)
 
     return Q_1, ep_rewards
 
@@ -228,12 +236,13 @@ def run_episode(env, Q):
 if __name__=="__main__":
     from config import config, env
 
-    # Q = Net(0, 128, env.action_space.n).to(DEVICE)
-    # Q.load_state_dict(torch.load("final_Q.pth"))
-    # run_episode(env, Q)
+    Q = Net(0, 128, env.action_space.n).to(DEVICE)
+    Q.load_state_dict(torch.load("best_Q.pth"))
+    run_episode(env, Q)
 
-    Q, rewards = main(env, render=True, render_step=100, measure_step=1000, num_episodes=3_000, update_step=50, hidden_dim=128, lr=5e-3, measure_repeats=10, eps_decay=0.997)
+    # Q, rewards = main(env, render=True, render_step=100, measure_step=1000, num_episodes=3_000, update_step=50, hidden_dim=128, lr=5e-3, measure_repeats=10, eps_decay=0.997)
     # # save the trained Q-Network
+    Q, rewards = main(env, load=True, reward_thresh=700, eps=0.1, render=True, render_step=100, measure_step=1000, num_episodes=1_000, update_step=50, hidden_dim=128, lr=1e-3, measure_repeats=10, eps_decay=0.997)
     torch.save(Q.state_dict(), "final_Q.pth")
 
     plt.plot(rewards)

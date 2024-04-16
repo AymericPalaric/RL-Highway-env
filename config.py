@@ -22,7 +22,7 @@ config = {
     },
     "lanes_count": 3,
     "vehicles_count": 20,
-    "duration": 100,  # [s]
+    "duration": 300,  # [s]
     "initial_spacing": 0,
     "collision_reward": -2,  # The reward received when colliding with a vehicle.
     "right_lane_reward": 0,  # The reward received when driving on the right-most lanes, linearly mapped to
