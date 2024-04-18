@@ -82,6 +82,9 @@ def train(env, agent, n_episodes, eval_every=10, reward_threshold = 300, n_eval 
         while not done:
             action = agent.get_action(state)
             next_state, reward, terminated, _, info = env.step(action)
+            if not info['rewards']['on_road_reward']: # If the car is off the road
+                reward -= 1
+            reward += 0.01 # Reward for staying on the road
             agent.update(state, action, reward, done, next_state)
             state = next_state
             done = terminated or info['crashed'] or info['rewards']['collision_reward'] or not info['rewards']['on_road_reward']
@@ -100,9 +103,12 @@ def train(env, agent, n_episodes, eval_every=10, reward_threshold = 300, n_eval 
                 break
     print("Finished training")
     # Save the model
-    torch.save(agent.policy_net.state_dict(), "reinforcement_15000.pth")
+    # torch.save(agent.policy_net.state_dict(), "reinforcement_batch.pth")
     return
 
+def resize(x, n_action):
+    # Resize the action to [-1, 1]
+    return x*2/n_action -1
 
 class Net(nn.Module):
     def __init__(self, obs_size, hidden_size, n_actions):
@@ -110,10 +116,10 @@ class Net(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(obs_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size*2),
-            nn.ReLU(),
-            nn.Linear(hidden_size*2, hidden_size),
-            nn.ReLU(),
+            # nn.Linear(hidden_size, hidden_size*2),
+            # nn.ReLU(),
+            # nn.Linear(hidden_size*2, hidden_size),
+            # nn.ReLU(),
             nn.Linear(hidden_size, n_actions)
         )
     
@@ -142,9 +148,11 @@ class ReinforceSqueleton:
     def get_action(self, state):
         flat_state = torch.tensor(state.flatten()).float()
         with torch.no_grad():
-            action_probs = self.policy_net(flat_state)
+            action_probs = self.policy_net.forward(flat_state)
             # Get the action with the highest probability
-            action = action_probs.item() # output is a tensor of size 1
+            action = action_probs.argmax()
+            action = resize(action, 21)
+            action = action.item() # output is a tensor of size 1
         return [action]
     
     def reset(self):
@@ -153,7 +161,7 @@ class ReinforceSqueleton:
         # Action space = Box(-1, 1, (1,))
 
         obs_size = 288 # self.observation_space.shape = 2*12*12
-        n_actions = 1 # self.action_space.shape
+        n_actions = 21 # self.action_space.shape
         hidden_size = 128
         
         self.policy_net = Net(obs_size, hidden_size, n_actions)
@@ -189,45 +197,104 @@ class Reinforce(ReinforceSqueleton):
             states, actions, rewards = zip(*self.current_episode)
             returns = self.gradient_returns(rewards, self.gamma)
             flat_states = torch.tensor(states.flatten()).float()
-            # actions = torch.tensor(actions).float()
-            # returns = torch.tensor(returns).float()
             returns = (returns - returns.mean())/ (returns.std() + 1e-9)
-            action_probs = self.policy_net(flat_states)
+            action_probs = self.policy_net.forward(flat_states)
             action_probs = action_probs.item() # action_probs.gather(1, actions.view(-1, 1)).squeeze()
             loss = -torch.log(action_probs)*returns
-            loss = loss.mean()
+            # loss = loss.mean()
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
             self.current_episode = []
         return
 
-agent = Reinforce(env.action_space, env.observation_space, gamma=0.95, episode_batch_size=1, learning_rate=0.01)
-start_time = time.time()
-train(env, agent, n_episodes=15000, eval_every=50, reward_threshold=200, n_eval=10)
-end_time = time.time()
-print(f"Training time: {(end_time - start_time)//60} min" )
+# agent = Reinforce(env.action_space, env.observation_space, gamma=0.95, episode_batch_size=1, learning_rate=0.01)
+# start_time = time.time()
+# train(env, agent, n_episodes=15000, eval_every=50, reward_threshold=200, n_eval=10)
+# end_time = time.time()
+# print(f"Training time: {(end_time - start_time)//60} min" )
 
 class ReinforceBatch(Reinforce):
     
     # Update only after a batch of sequence of episodes
+    def __init__(
+            self,
+            action_space,
+            observation_space,
+            gamma,
+            episode_batch_size,
+            learning_rate,
+    ):
+        super().__init__(action_space, observation_space, gamma, episode_batch_size, learning_rate)
+        self.episode_buffer = []
+
     def update(self, state, action, reward, done, next_state):
-        self.current_episode.append((state, action, reward))
+        self.episode_buffer.append((state, action, reward))
         if done:
             self.n_eps += 1
-            states, actions, rewards = zip(*self.current_episode)
-            returns = self.gradient_returns(rewards, self.gamma)
-            flat_states = torch.tensor(states.flatten()).float()
-            returns = (returns - returns.mean())/ (returns.std() + 1e-9)
-            action_probs = self.policy_net(flat_states)
-            action_probs = action_probs.item()
-            loss = -torch.log(action_probs)*returns
-            loss = loss.mean()
-            loss.backward()
             if self.n_eps % self.episode_batch_size == 0:
-                self.optimizer.step()
-                self.optimizer.zero_grad()
-            self.current_episode = []
+                self.learn_from_buffer()
+                self.episode_buffer = []
+    
+    def learn_from_buffer(self):
+        states, actions, rewards = zip(*self.episode_buffer)
+        returns = self.gradient_returns(rewards, self.gamma)
+        flat_states = torch.tensor(states.flatten()).float()
+        returns = (returns - returns.mean())/ (returns.std() + 1e-9)
+        action_probs = self.policy_net.forward(flat_states)
+        action_probs = action_probs.item()
+        action = action_probs.argmax()
+        action = resize(action, 21)
+        action = action.item()
+        loss = -torch.log(action)*returns
+        loss = loss.mean()
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
         return
     
-    
+# agent = ReinforceBatch(env.action_space, env.observation_space, gamma=0.99, episode_batch_size=32, learning_rate=0.0005)
+# start_time = time.time()
+# train(env, agent, n_episodes=1000, eval_every=50, reward_threshold=200, n_eval=10)
+# end_time = time.time()
+# print(f"Training time: {(end_time - start_time)//60} min" )
+
+
+class REINFORCEBatch(Reinforce):
+    def update(self, state, action, reward, terminated, next_state):
+
+        self.current_episode.append((
+            torch.tensor(state).unsqueeze(0),
+            torch.tensor([[action]], dtype=torch.int64),
+            torch.tensor([reward]),
+        )
+        )
+
+        if terminated:
+            self.n_eps += 1
+
+            states, actions, rewards = tuple(
+                [torch.cat(data) for data in zip(*self.current_episode)]
+            )
+
+            current_episode_returns = self.gradient_returns(rewards, self.gamma)
+
+            unn_log_probs = self.policy_net.forward(states)
+            log_probs = unn_log_probs - torch.log(torch.sum(torch.exp(unn_log_probs), dim=1)).unsqueeze(1)
+            self.scores.append(torch.dot(log_probs.gather(1, actions).squeeze(), current_episode_returns).unsqueeze(0))
+            self.current_episode = []
+
+            if (self.n_eps % self.episode_batch_size)==0:
+                self.optimizer.zero_grad()
+                full_neg_score = - torch.cat(self.scores).sum() / self.episode_batch_size
+                full_neg_score.backward()
+                self.optimizer.step()
+                
+                self.scores = []
+
+
+agent = REINFORCEBatch(env.action_space, env.observation_space, gamma=0.95, episode_batch_size=32, learning_rate=0.001)
+start_time = time.time()
+train(env, agent, n_episodes=1500, eval_every=50, reward_threshold=200, n_eval=10)
+end_time = time.time()
+print(f"Training time: {(end_time - start_time)//60} min" )

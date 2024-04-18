@@ -21,7 +21,7 @@ config = {
     "duration": 300,
     "collision_reward": -2,
     "lane_centering_cost": 4,
-    "action_reward": -0.2,
+    "action_reward": -0.3,
     "controlled_vehicles": 1,
     "other_vehicles": 1,
     "screen_width": 600,
