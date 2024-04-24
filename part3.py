@@ -20,7 +20,6 @@ class FlattenObservation(gym.Wrapper):
         return observation.flatten()
     
 
-
 if __name__ == "__main__":
     train = False
     if train:

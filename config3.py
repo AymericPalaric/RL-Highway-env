@@ -17,7 +17,7 @@ config = {
             "success_goal_reward": 0.12,
             "collision_reward": -5,
             "steering_range": np.deg2rad(90),
-            "simulation_frequency": 30,
+            "simulation_frequency": 40,
             "policy_frequency": 5,
             "duration": 40,
             "screen_width": 600,
@@ -27,7 +27,7 @@ config = {
             "controlled_vehicles": 1,
             "vehicles_count": 3,
             "add_walls": True
-        }
+            }
 
 env.unwrapped.configure(config)
 print(env.reset())
