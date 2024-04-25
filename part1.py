@@ -2,421 +2,250 @@ import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
-import random
 from torch import optim
+from torch.optim.lr_scheduler import StepLR
 from copy import deepcopy
 import matplotlib.pyplot as plt
 from tqdm import tqdm, trange
+import random
+from utils import Memory
+from nets import Net
 
 DEVICE = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-class Net(nn.Module):
-    def __init__(self, obs_size, hidden_size, n_actions):
-        super(Net, self).__init__()
-        # self.net = nn.Sequential(
-        #     nn.Linear(obs_size, hidden_size),
-        #     nn.ReLU(),
-        #     nn.Linear(hidden_size, n_actions),
-        # )
-        self.conv1 = nn.Conv2d(7, 16, kernel_size=3, stride=1)
-        self.relu = nn.ReLU()
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1)
-        self.flatten = nn.Flatten()
-        self.fc = nn.Sequential(
-            nn.Linear(32*4*4, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, n_actions),
-        )
-
-    def forward(self, x):
-        # flatten x
-        # x = x.view(x.size(0), -1)
-        # x = x.unsqueeze(1)
-        # print("x shape", x.shape)
-        x = self.conv1(x)
-        x = self.relu(x)
-        x = self.conv2(x)
-        x = self.relu(x)
-        x = self.flatten(x)
-        # print("x shape", x.shape)
-        x = self.fc(x)
-
-        return x
 
 
-class ReplayBuffer:
-    def __init__(self, capacity):
-        self.capacity = capacity
-        self.memory = []
-        self.position = 0
+def select_action(model, env, state, eps):
+    state = torch.Tensor(state).to(DEVICE)
+    # print(state.shape)
+    with torch.no_grad():
+        values = model(state.unsqueeze(0))
 
-    def push(self, state, action, reward, terminated, next_state):
-        """Saves a transition."""
-        if len(self.memory) < self.capacity:
-            self.memory.append(None)
-        self.memory[self.position] = (state, action, reward, terminated, next_state)
-        self.position = (self.position + 1) % self.capacity
+    # select a random action wih probability eps
+    if random.random() <= eps:
+        action = np.random.randint(0, env.action_space.n)
+    else:
+        action = np.argmax(values.cpu().squeeze().numpy())
 
-    def sample(self, batch_size):
-        return random.choices(self.memory, k=batch_size)
-
-    def __len__(self):
-        return len(self.memory)
-
-class DQN:
-    def __init__(
-        self,
-        action_space,
-        observation_space,
-        gamma,
-        batch_size,
-        buffer_capacity,
-        update_target_every,
-        epsilon_start,
-        decrease_epsilon_factor,
-        epsilon_min,
-        learning_rate,
-    ):
-        self.action_space = action_space
-        self.observation_space = observation_space
-        self.gamma = gamma
-
-        self.batch_size = batch_size
-        self.buffer_capacity = buffer_capacity
-        self.update_target_every = update_target_every
-
-        self.epsilon_start = epsilon_start
-        self.decrease_epsilon_factor = (
-            decrease_epsilon_factor  # larger -> more exploration
-        )
-        self.epsilon_min = epsilon_min
-
-        self.learning_rate = learning_rate
-
-        self.reset()
-
-    def reset(self):
-        hidden_size = 128
-
-        obs_size = np.prod(self.observation_space.shape)
-        # print("obs_size", obs_size)
-        n_actions = self.action_space.n
-
-        self.buffer = ReplayBuffer(self.buffer_capacity)
-        self.q_net = Net(obs_size, hidden_size, n_actions)
-        self.q_net.to(DEVICE)
-        self.target_net = Net(obs_size, hidden_size, n_actions)
-        self.target_net.to(DEVICE)
-
-        self.loss_function = nn.MSELoss()
-        self.optimizer = optim.Adam(
-            params=self.q_net.parameters(), lr=self.learning_rate
-        )
-
-        self.epsilon = self.epsilon_start
-        self.n_steps = 0
-        self.n_eps = 0
-
-    def update(self, state, action, reward, terminated, next_state):
-        """
-        ** TO BE COMPLETED **
-        """
-        # print("action in update", action)
-        # add data to replay buffer
-        self.buffer.push(torch.tensor(state).unsqueeze(0), 
-                           torch.tensor([[action]], dtype=torch.int64), 
-                           torch.tensor([reward]), 
-                           torch.tensor([terminated], dtype=torch.int64), 
-                           torch.tensor(next_state).unsqueeze(0),
-                          )
-
-        if len(self.buffer) < self.batch_size:
-            return np.inf
-
-        # get batch
-        transitions = self.buffer.sample(self.batch_size)
-
-        # Compute loss - TO BE IMPLEMENTED!
-        # Hint: use the gather method from torch.
-
-        # Compute the Q values for the current state
-        (
-            states_batch,
-            actions_batch,
-            rewards_batch,
-            terminated_batch,
-            next_states_batch
-        ) = tuple(map(torch.cat, zip(*transitions)))
-        states_batch = states_batch.to(DEVICE)
-        actions_batch = actions_batch.to(DEVICE)
-        q_values = self.q_net.forward(states_batch).gather(1, actions_batch)
-
-        # compute the ideal Q values
-        self.target_net.eval()
-        with torch.no_grad():
-            next_states_batch = next_states_batch.to(DEVICE)
-            terminated_batch = terminated_batch.to(DEVICE)
-            next_state_values = (1 - terminated_batch) * self.target_net(
-                next_states_batch
-            ).max(1)[0]
-            next_state_values = next_state_values.to(DEVICE)
-            rewards_batch = rewards_batch.to(DEVICE)
-            targets = next_state_values * self.gamma + rewards_batch
-            targets = targets.float()
-        self.target_net.train()
-        # print(targets.unsqueeze(1).shape, q_values.shape)
-        # print("targets", targets.dtype)
-        # print("q_values", q_values.dtype)
-        loss = self.loss_function(q_values, targets.unsqueeze(1))
-        # print("loss", loss)
-
-        # Optimize the model
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
-        if not ((self.n_steps + 1) % self.update_target_every):
-            self.target_net.load_state_dict(self.q_net.state_dict())
-
-        self.decrease_epsilon()
-
-        self.n_steps += 1
-        if terminated:
-            self.n_eps += 1
-
-        return loss.detach().cpu().numpy()
-
-    def get_action(self, state, epsilon=None):
-        """
-        Return action according to an epsilon-greedy exploration policy
-        """
-        if epsilon is None:
-            epsilon = self.epsilon
-
-        if np.random.rand() < epsilon:
-            action =  env.action_space.sample()
-        else:
-            action = np.argmax(self.get_q(state))
-        # print("action in get action", action)
-        return action
-
-    def decrease_epsilon(self):
-        self.epsilon = self.epsilon_min + (self.epsilon_start - self.epsilon_min) * (
-            np.exp(-1.0 * self.n_eps / self.decrease_epsilon_factor)
-        )
-    
-    def get_q(self, state):
-        """
-        Compute Q function for a states
-        """
-        # state_tensor = torch.tensor([state]).unsqueeze(0)
-        # print("state in get_q", state)
-        state_tensor = torch.tensor(state).unsqueeze(0)
-        self.q_net.eval()
-        with torch.no_grad():
-            state_tensor = state_tensor.to(DEVICE)
-            output = self.q_net.forward(state_tensor) # shape (1,  n_actions)
-        # print("output", output.numpy()[0])
-        self.q_net.train()
-        return output.cpu().numpy()[0]
+    return action
 
 
-def eval_agent(agent, env, n_sim=5, verbose=False):
+def train(batch_size, current, target, optim, memory, gamma):
+
+    states, actions, next_states, rewards, is_done = memory.sample(batch_size)
+
+    q_values = current(states)
+
+    next_q_values = current(next_states)
+    next_q_state_values = target(next_states)
+
+    q_value = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
+    next_q_value = next_q_state_values.gather(1, torch.max(next_q_values, 1)[1].unsqueeze(1)).squeeze(1)
+    expected_q_value = rewards + gamma * next_q_value * (1 - is_done)
+
+    loss = (q_value - expected_q_value.detach()).pow(2).mean()
+
+    optim.zero_grad()
+    loss.backward()
+    optim.step()
+    return loss.item()
+
+
+def evaluate(Qmodel, env, repeats):
     """
-    ** TO BE IMPLEMENTED **
-    
-    Monte Carlo evaluation of DQN agent.
-
-    Repeat n_sim times:
-        * Run the DQN policy until the environment reaches a terminal state (= one episode)
-        * Compute the sum of rewards in this episode
-        * Store the sum of rewards in the episode_rewards array.
+    Runs a greedy policy with respect to the current Q-Network for "repeats" many episodes. Returns the average
+    episode reward.
     """
-    env_copy = deepcopy(env)
-    episode_rewards = np.zeros(n_sim)
-    for i in trange(n_sim, disable=not verbose):
-        state,_ = env_copy.reset()
+    Qmodel.eval()
+    perform = 0
+    for _ in range(repeats):
+        state = env.reset()[0]
         done = False
         while not done:
-            action = agent.get_action(state)
-            # print(env_copy.step(action))
-            next_state, reward, terminated, truncated, _ = env_copy.step(action)
-            state = next_state
-            done = terminated or truncated
-            episode_rewards[i] += reward
-    return episode_rewards
-
-def train(env, agent, N_episodes, eval_every=10, reward_threshold=300):
-    total_time = 0
-    state, _ = env.reset()
-    losses = []
-    agg_rewards = []
-    # display the progress with the reward and the loss
-    pbar = tqdm(range(N_episodes), postfix={"reward": 0.0, "loss": 0.0})
-    for ep in pbar:
-        done = False
-        ep_reward = 0
-        state, _ = env.reset()
-        while not done: 
-            action = agent.get_action(state)
-
-            next_state, reward, terminated, truncated, _ = env.step(action)
-            loss_val = agent.update(state, action, reward, terminated, next_state)
-            ep_reward += reward
-
-            pbar.set_postfix(
-                {
-                    "reward": ep_reward,
-                    "loss": loss_val,
-                    "epsilon": agent.epsilon,
-                }
-            )
-            state = next_state
-            losses.append(loss_val)
-
-            done = terminated or truncated
-            total_time += 1
-        agg_rewards.append(ep_reward)
-        if ((ep+1)% eval_every == 0):
-            rewards = eval_agent(agent, env)
-            print("episode =", ep+1, ", reward = ", np.mean(rewards))
-            if np.mean(rewards) >= reward_threshold:
-                break
-                
-    return losses, agg_rewards
+            state = torch.Tensor(state).to(DEVICE)
+            with torch.no_grad():
+                values = Qmodel(state.unsqueeze(0))
+            action = np.argmax(values.cpu().squeeze().numpy())
+            state, reward, done, truncated, info = env.step(action)
+            done = done or truncated
+            reward, done = correct_reward(done, env, info, reward)
+            perform += reward
+    Qmodel.train()
+    return perform/repeats
 
 
-def run_agent(agent, env):
-    state, _ = env.reset()
-    done = False
-    full_reward = 0
-    while not done:
-        action = agent.get_action(state)
-        state, reward, terminated, truncated, _ = env.step(action)
-        done = terminated or truncated
-        env.render()
-        full_reward += reward
-    print("final reward", full_reward)
-    env.close()
+def update_parameters(current_model, target_model):
+    target_model.load_state_dict(current_model.state_dict())
 
-if __name__=="__main__":
-    TRAIN = True
-    from config import env
+def correct_reward(done, env, info, reward):
+    """
+    Update the reward to penalize going backwards and off the road.
+    state observation: [presence, x, y, vx, vy, cos_h, sin_h] for each cell in a radius of 4 cells around the agent.
+    """
+    # get agent position, heading and speed
+    x = env.vehicle.position[0]
+    y = env.vehicle.position[1]
+    speed = info["speed"]
+    on_road = info["rewards"]["on_road_reward"]>0
+    collision = info["rewards"]["collision_reward"]>0
+    heading = env.vehicle.heading
+    # print(heading)
+    if not on_road:
+        reward -= 2
+        done = True
+    if speed >= 20:
+        reward += 1
+    if speed <= 5:
+        reward -= 0.5
+    if collision:
+        reward -= 2
+    # check the heading
+    if (heading>3*np.pi/4 and heading<5*np.pi/2) or (heading<-3*np.pi/4 and heading>-5*np.pi/4):
+        reward -= 1
+    return reward, done
 
+
+def main(env, load=False, gamma=0.99, lr=1e-3, min_episodes=20, eps=1, eps_decay=0.995, eps_min=0.01, update_step=10, batch_size=64, update_repeats=50,
+         num_episodes=3000, seed=42, max_memory_size=50000, lr_gamma=0.9, lr_step=100, measure_step=100,
+         measure_repeats=100, hidden_dim=64, horizon=np.inf, render=True, render_step=50, reward_thresh=-np.inf):
+    """
+    :param gamma: reward discount factor
+    :param lr: learning rate for the Q-Network
+    :param min_episodes: we wait "min_episodes" many episodes in order to aggregate enough data before starting to train
+    :param eps: probability to take a random action during training
+    :param eps_decay: after every episode "eps" is multiplied by "eps_decay" to reduces exploration over time
+    :param eps_min: minimal value of "eps"
+    :param update_step: after "update_step" many episodes the Q-Network is trained "update_repeats" many times with a
+    batch of size "batch_size" from the memory.
+    :param batch_size: see above
+    :param update_repeats: see above
+    :param num_episodes: the number of episodes played in total
+    :param seed: random seed for reproducibility
+    :param max_memory_size: size of the replay memory
+    :param lr_gamma: learning rate decay for the Q-Network
+    :param lr_step: every "lr_step" episodes we decay the learning rate
+    :param measure_step: every "measure_step" episode the performance is measured
+    :param measure_repeats: the amount of episodes played in to asses performance
+    :param hidden_dim: hidden dimensions for the Q_network
+    :param env_name: name of the gym environment
+    :param cnn: set to "True" when using environments with image observations like "Pong-v0"
+    :param horizon: number of steps taken in the environment before terminating the episode (prevents very long episodes)
+    :param render: if "True" renders the environment every "render_step" episodes
+    :param render_step: see above
+    :return: the trained Q-Network and the measured performances
+    """
+
+    if not load:
+        Q_1 = Net(0, hidden_dim, env.action_space.n).to(DEVICE)
+        Q_2 = Net(0, hidden_dim, env.action_space.n).to(DEVICE)
+    else:
+        Q_1 = Net(0, hidden_dim, env.action_space.n).to(DEVICE)
+        Q_1.load_state_dict(torch.load("best_Q.pth"))
+        Q_2 = Net(0, hidden_dim, env.action_space.n).to(DEVICE)
+        Q_2.load_state_dict(torch.load("best_Q.pth"))
     
-    if TRAIN:
-        
-        # print("config", env.config)
-        env.reset()
-        print("obs space:", env.observation_space)
-        print("action space:", env.action_space, env.action_space.n)
-        # print("action space sample:", env.action_space.sample())
-        print("obs space sample:", env.observation_space.sample().shape)
-        # print("step:", env.step(env.action_space.sample()))
-        env.reset()
+    # transfer parameters from Q_1 to Q_2
+    update_parameters(Q_1, Q_2)
 
-        action_space = env.action_space
-        observation_space = env.observation_space
-        gamma = 0.95
-        batch_size = 128
-        buffer_capacity = 10_000
-        update_target_every = 256
+    # we only train Q_1
+    for param in Q_2.parameters():
+        param.requires_grad = False
 
-        epsilon_start = 0.15
-        decrease_epsilon_factor = 1000
-        epsilon_min = 0.05
+    optimizer = optim.Adam(Q_1.parameters(), lr=lr)
+    scheduler = StepLR(optimizer, step_size=lr_step, gamma=lr_gamma)
 
-        learning_rate = 1e-3
+    memory = Memory(max_memory_size)
+    performance = []
+    ep_rewards = []
+    loss = 0
+    max_reward = reward_thresh
+    pbar = trange(num_episodes, postfix={"reward": 0, "lr": lr, "eps": eps, "loss": 0, "best_reward": max_reward})
+    for episode in pbar:
+        # display the performance
+        if (episode % measure_step == 0) and episode >= min_episodes:
+            performance.append([episode, evaluate(Q_1, env, measure_repeats)])
+            # torch.save(Q_1.state_dict(), "Q.pth")
+            print("Episode: ", episode)
+            print("rewards: ", performance[-1][1])
+            print("lr: ", scheduler.get_lr()[0])
+            print("eps: ", eps)
 
-        arguments = (action_space,
-                    observation_space,
-                    gamma,
-                    batch_size,
-                    buffer_capacity,
-                    update_target_every, 
-                    epsilon_start, 
-                    decrease_epsilon_factor, 
-                    epsilon_min,
-                    learning_rate,
-                )
-        
-        
-        agent = DQN(*arguments)
+        state = env.reset()[0]
+        memory.state.append(state)
 
-        N_episodes = 1_000
-        eval_every = 100
-        reward_threshold = 300
-
-        state, _ = env.reset()
         done = False
+        i = 0
+        ep_reward = 0
         full_reward = 0
         while not done:
-            action = agent.get_action(state)
-            state, reward, terminated, truncated, _ = env.step(action)
-            done = terminated or truncated
-            # env.render()
+            i += 1
+            action = select_action(Q_2, env, state, eps)
+            state, reward, done, truncated, info = env.step(action)
+            done = done or truncated
+            reward, done = correct_reward(done, env, info, reward)
             full_reward += reward
-        print("Reward before training", full_reward)
-        # env.close()
 
-        env.reset()
+            if i > horizon:
+                done = True
 
-        losses, agg_rewards = train(env, agent, N_episodes, eval_every=eval_every, reward_threshold=reward_threshold)
-        
-        plt.plot(losses)
-        plt.title("Loss")
-        plt.show()
-        plt.savefig("loss.png")
-        plt.clf()
-        plt.plot(agg_rewards)
-        plt.title("Reward")
-        plt.show()
-        plt.savefig("reward.png")
+            # render the environment if render == True
+            if render and episode % render_step == 0:
+                env.render()
 
-        rewards = eval_agent(agent, env, 5, verbose=True)
-        print("")
-        print("mean reward after training = ", np.mean(rewards))
+            # save state, action, reward sequence
+            memory.update(state, action, reward, done)
 
-        # save model
-        torch.save(agent.q_net.state_dict(), "dqn_model.pth")
-    # test run
-    
-    action_space = env.action_space
-    observation_space = env.observation_space
-    gamma = 0.9
-    batch_size = 64
-    buffer_capacity = 10_000
-    update_target_every = 128
+        if episode >= min_episodes and episode % update_step == 0:
+            for _ in range(update_repeats):
+                loss = train(batch_size, Q_1, Q_2, optimizer, memory, gamma)
 
-    epsilon_start = 0.15
-    decrease_epsilon_factor = 1000
-    epsilon_min = 0.05
+            # transfer new parameter from Q_1 to Q_2
+            update_parameters(Q_1, Q_2)
 
-    learning_rate = 5e-3
+        # update learning rate and eps
+        scheduler.step()
+        eps = max(eps*eps_decay, eps_min)
+        ep_reward = full_reward
+        if ep_reward > max_reward:
+            max_reward = ep_reward
+            # save the best model
+            torch.save(Q_1.state_dict(), "best_Q.pth")
+        ep_rewards.append(ep_reward)
+        pbar.set_postfix(reward=ep_reward, lr=scheduler.get_lr()[0], eps=eps, loss=loss, best_reward=max_reward)
 
-    arguments = (action_space,
-                observation_space,
-                gamma,
-                batch_size,
-                buffer_capacity,
-                update_target_every, 
-                epsilon_start, 
-                decrease_epsilon_factor, 
-                epsilon_min,
-                learning_rate,
-            )
-    state, _ = env.reset()
-    agent_test = DQN(*arguments)
-    if TRAIN:
-        agent_test.q_net.load_state_dict(agent.q_net.state_dict())
-    else:
-        print("loading model")
-        agent_test.q_net.load_state_dict(torch.load("dqn_model.pth"))
-    # agent_test.target_net.load_state_dict(agent.target_net.state_dict())
-    agent_test.epsilon = 0.0
-    agent_test.q_net.eval()
-    # agent_test.target_net.eval()
-    
-    run_agent(agent_test, env)
+    return Q_1, ep_rewards
 
+def run_episode(env, Q):
+    state = env.reset()[0]
+    done = False
+    ep_reward = 0
+    while not done:
+        state = torch.Tensor(state).to(DEVICE)
+        with torch.no_grad():
+            values = Q(state.unsqueeze(0))
+        action = np.argmax(values.cpu().squeeze().numpy())
+        state, reward, done, truncated, info = env.step(action)
+        done = done or truncated
+        reward, done = correct_reward(done, env, info, reward)
+        ep_reward += reward
+        env.render()
+    print("Reward: ", ep_reward)
     env.close()
+
+
+if __name__=="__main__":
+    from config import config, env
+
+    Q = Net(0, 128, env.action_space.n).to(DEVICE)
+    Q.load_state_dict(torch.load("best_Q.pth"))
+    run_episode(env, Q)
+
+    # Q, rewards = main(env, render=True, render_step=100, measure_step=1000, num_episodes=3_000, update_step=50, hidden_dim=128, lr=5e-3, measure_repeats=10, eps_decay=0.997)
+    # # save the trained Q-Network
+    Q, rewards = main(env, load=True, reward_thresh=700, eps=0.1, render=True, render_step=100, measure_step=1000, num_episodes=1_000, update_step=50, hidden_dim=128, lr=1e-3, measure_repeats=10, eps_decay=0.997)
+    torch.save(Q.state_dict(), "final_Q.pth")
+
+    plt.plot(rewards)
+    plt.xlabel("Episode")
+    plt.ylabel("Performance")
+    plt.show()
